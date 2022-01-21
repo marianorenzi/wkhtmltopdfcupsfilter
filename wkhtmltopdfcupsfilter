@@ -1,0 +1,94 @@
+#! /bin/bash
+
+# Get an attribute from the ppd file
+getAttribute () {
+  ATTRIBUTE=$1
+  VALUE=`grep "^\*$ATTRIBUTE:" "$PPD" | cut -d" " -f2-`
+  VALUE=${VALUE##\"}
+  VALUE=${VALUE%%\"}
+  printf "DEBUG: Attribute $ATTRIBUTE is '%s'\n" "$VALUE" >&2
+  printf "%s" "$VALUE"
+}
+
+# Get an option for the document: either default ppd attribute or user-provided value
+getOption () {
+  OPTION=$1
+  VALUE=$(getAttribute Default$OPTION)
+  printf "DEBUG: Default $OPTION is '%s'\n" "$VALUE" >&2
+
+  if [ -n "$OPTIONS" ]
+  then
+    # Case of the very first option
+    if [ -z "${OPTIONS/$OPTION=*}" ]
+    then
+      VALUE=${OPTIONS#$OPTION=}
+      VALUE=${VALUE%% *}
+      printf "DEBUG: Selected $OPTION is '%s'\n" "$VALUE" >&2
+    fi
+    # Case of other options
+    if [ -z "${OPTIONS/* $OPTION=*}" ]
+    then
+      VALUE=${OPTIONS##* $OPTION=}
+      VALUE=${VALUE%% *}
+      printf "DEBUG: Selected $OPTION is '%s'\n" "$VALUE" >&2
+    fi
+
+    # Boolean options
+    if [ -z "${OPTIONS/* $OPTION *}" ]
+    then
+      VALUE=True
+      printf "DEBUG: Selected $OPTION is '%s'\n" "$VALUE" >&2
+    fi
+    if [ -z "${OPTIONS/* no$OPTION *}" ]
+    then
+      VALUE=False
+      printf "DEBUG: Selected $OPTION is '%s'\n" "$VALUE" >&2
+    fi
+  fi
+
+  printf "%s" "$VALUE"
+}
+
+# Get an option for the document and check that it is a number
+getOptionNumber () {
+  OPTION=$1
+  VALUE=$(getOption $OPTION)
+  VALUE=${VALUE#Custom.}
+  case "$VALUE" in
+    [0-9]*) ;;
+    *) printf "ERROR: Option $OPTION must be a number, got '%s'\n" "$VALUE" >&2
+       exit 1
+       ;;
+  esac
+  printf "%s" "$VALUE"
+}
+
+# Make sure we have enough options
+if [ $# != 5 -a $# != 6 ]; then
+  echo "ERROR: $0 jobid user name nb options [filename]" >&2
+  exit 1
+fi
+
+NB=$4
+OPTIONS=$5
+INFILE=$6
+
+echo "DEBUG: PATH="$0 >&2
+echo "DEBUG: NB="$NB >&2
+echo "DEBUG: OPTIONS="$OPTIONS >&2
+echo "DEBUG: INFILE="$INFILE >&2
+
+echo "INFO: Running command line for wkhtmltopdf" >&2
+
+set -meuo pipefail
+
+if [ -z $INFILE ]
+then
+  INFILE="-"
+fi
+
+FILEDATA=$(cat $INFILE)
+wkhtmltopdf - - <<< $FILEDATA
+
+echo "INFO: Ready" >&2
+exit 0
