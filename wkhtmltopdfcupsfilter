@@ -3,9 +3,14 @@
 # Get an attribute from the ppd file
 getAttribute () {
   ATTRIBUTE=$1
-  VALUE=`grep "^\*$ATTRIBUTE:" "$PPD" | cut -d" " -f2-`
-  VALUE=${VALUE##\"}
-  VALUE=${VALUE%%\"}
+  regex="\*[$ATTRIBUTE]+:[[:space:]]+(\w+)"
+  VALUE=`grep "^\*$ATTRIBUTE:" "$PPD"`
+  if [[ "${VALUE}" =~ $regex ]]; then
+    VALUE="${BASH_REMATCH[1]}"
+  else
+    echo "DEBUG: getAttribute RegEx failed." >&2
+    echo "DEBUG: RegEx: $regex" >&2
+  fi
   printf "DEBUG: Attribute $ATTRIBUTE is '%s'\n" "$VALUE" >&2
   printf "%s" "$VALUE"
 }
@@ -14,7 +19,6 @@ getAttribute () {
 getOption () {
   OPTION=$1
   VALUE=$(getAttribute Default$OPTION)
-  printf "DEBUG: Default $OPTION is '%s'\n" "$VALUE" >&2
 
   if [ -n "$OPTIONS" ]
   then
@@ -63,6 +67,11 @@ getOptionNumber () {
   printf "%s" "$VALUE"
 }
 
+# Convert from points (1/72 of inch) to 1/100th of mm
+points2mm() {
+  printf %.1f $(bc -l <<< "1/72 * 25.4 * $1")
+}
+
 # Make sure we have enough options
 if [ $# != 5 -a $# != 6 ]; then
   echo "ERROR: $0 jobid user name nb options [filename]" >&2
@@ -73,12 +82,89 @@ NB=$4
 OPTIONS=$5
 INFILE=$6
 
-echo "DEBUG: PATH="$0 >&2
-echo "DEBUG: NB="$NB >&2
-echo "DEBUG: OPTIONS="$OPTIONS >&2
-echo "DEBUG: INFILE="$INFILE >&2
+PAGESIZE=$(getOption PageSize)
+case "$PAGESIZE" in
+  Legal)
+    PAGEWIDTH="215.9"
+    PAGEHEIGHT="355.6"
+    ;;
+  Letter)
+    PAGEWIDTH="215.9"
+    PAGEHEIGHT="279.4"
+    ;;
+  A3)
+    PAGEWIDTH="297"
+    PAGEHEIGHT="420"
+    ;;
+  A4)
+    PAGEWIDTH="210"
+    PAGEHEIGHT="297"
+    ;;
+  A4TF)
+    PAGEWIDTH="210"
+    PAGEHEIGHT="304.8"
+    ;;
+  A5)
+    PAGEWIDTH="148.5"
+    PAGEHEIGHT="210"
+    ;;
+  110x115)
+    PAGEWIDTH="279.4"
+    PAGEHEIGHT="292.1"
+    ;;
+  110x120)
+    PAGEWIDTH="279.4"
+    PAGEHEIGHT="304.8"
+    ;;
+  110x170)
+    PAGEWIDTH="279.4"
+    PAGEHEIGHT="431.8"
+    ;;
+  115x110)
+    PAGEWIDTH="292.1"
+    PAGEHEIGHT="279.4"
+    ;;
+  120x120)
+    PAGEWIDTH="304.8"
+    PAGEHEIGHT="304.8"
+    ;;
+  Custom.*)
+    regex="^Custom.([0-9]+)x([0-9]+)"
+    if [[ "${PAGESIZE}" =~ $regex ]]; then
+      PAGEWIDTH="${BASH_REMATCH[1]}"
+      PAGEHEIGHT="${BASH_REMATCH[2]}"
+      PAGEWIDTH=$(points2mm $PAGEWIDTH)
+      PAGEHEIGHT=$(points2mm $PAGEHEIGHT)
+    else
+      echo "DEBUG: Custom PageSize RegEx failed." >&2
+      echo "DEBUG: RegEx: $regex" >&2
+    fi
+    ;;
+  *)
+    printf "ERROR: Unknown page size '%s'\n" "$PAGESIZE" >&2
+    exit 1
+    ;;
+esac
 
-echo "INFO: Running command line for wkhtmltopdf" >&2
+COLORSUPPORT=$(getAttribute ColorDevice)
+
+echo "DEBUG: PATH=$0" >&2
+echo "DEBUG: NB=$NB" >&2
+echo "DEBUG: OPTIONS=$OPTIONS" >&2
+echo "DEBUG: INFILE=$INFILE" >&2
+echo "DEBUG: COLORSUPPORT=$COLORSUPPORT" >&2
+echo "DEBUG: PAGESIZE=$PAGESIZE" >&2
+echo "DEBUG: PAGEWIDTH=${PAGEWIDTH}mm" >&2
+echo "DEBUG: PAGEHEIGHT=${PAGEHEIGHT}mm" >&2
+
+WKOPTIONS="--copies $NB --page-width $PAGEWIDTH --page-height $PAGEHEIGHT"
+
+if [ "${COLORSUPPORT,,}" = "false" ]
+then
+  WKOPTIONS+=" -g"
+fi
+
+echo "INFO: Running command line for wkhtmltopdf. Options=$WKOPTIONS" >&2
 
 set -meuo pipefail
 
@@ -87,8 +173,11 @@ then
   INFILE="-"
 fi
 
-FILEDATA=$(cat $INFILE)
-wkhtmltopdf - - <<< $FILEDATA
+wkhtmltopdfCmd() {
+  FILEDATA=$(cat $INFILE)
+  wkhtmltopdf $WKOPTIONS - - <<< $FILEDATA
+}
+wkhtmltopdfCmd | cat
 
 echo "INFO: Ready" >&2
 exit 0
