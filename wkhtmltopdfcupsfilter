@@ -3,16 +3,38 @@
 # Get an attribute from the ppd file
 getAttribute () {
   ATTRIBUTE=$1
-  regex="\*[$ATTRIBUTE]+:[[:space:]]+(\w+)"
+  
   VALUE=`grep "^\*$ATTRIBUTE:" "$PPD"`
+  if [ $? -ne 0 ]; then
+    exit 1
+  fi
+  
+  regex="\*$ATTRIBUTE:[[:space:]]+(\w+)"
   if [[ "${VALUE}" =~ $regex ]]; then
     VALUE="${BASH_REMATCH[1]}"
   else
-    echo "DEBUG: getAttribute RegEx failed." >&2
-    echo "DEBUG: RegEx: $regex" >&2
+    echo "DEBUG: getAttribute RegEx failed. $regex" >&2
+    exit 1
   fi
-  printf "DEBUG: Attribute $ATTRIBUTE is '%s'\n" "$VALUE" >&2
-  printf "%s" "$VALUE"
+  echo "DEBUG: Attribute $ATTRIBUTE is $VALUE" >&2
+  echo "$VALUE"
+}
+
+# Get dimensions from a specific PageSize entry
+getPddPageSize () {
+  SIZE=$1
+  
+  VALUE=`grep "^\*PageSize[[:space:]]$SIZE" "$PPD"`
+  if [ $? -ne 0 ]; then
+    exit 1
+  fi
+  
+  regex="PageSize[[:space:]]$SIZE.+:[[:space:]]\"<<\/PageSize\[([0-9]+)[[:space:]]([0-9]+)\]>>setpagedevice\""
+  if [[ ! "${VALUE}" =~ $regex ]]; then
+    echo "DEBUG: getPddPageSize RegEx failed. $regex" >&2
+    exit 1
+  fi
+  echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
 }
 
 # Get an option for the document: either default ppd attribute or user-provided value
@@ -27,30 +49,27 @@ getOption () {
     then
       VALUE=${OPTIONS#$OPTION=}
       VALUE=${VALUE%% *}
-      printf "DEBUG: Selected $OPTION is '%s'\n" "$VALUE" >&2
     fi
     # Case of other options
     if [ -z "${OPTIONS/* $OPTION=*}" ]
     then
       VALUE=${OPTIONS##* $OPTION=}
       VALUE=${VALUE%% *}
-      printf "DEBUG: Selected $OPTION is '%s'\n" "$VALUE" >&2
     fi
 
     # Boolean options
     if [ -z "${OPTIONS/* $OPTION *}" ]
     then
       VALUE=True
-      printf "DEBUG: Selected $OPTION is '%s'\n" "$VALUE" >&2
     fi
     if [ -z "${OPTIONS/* no$OPTION *}" ]
     then
       VALUE=False
-      printf "DEBUG: Selected $OPTION is '%s'\n" "$VALUE" >&2
     fi
   fi
 
-  printf "%s" "$VALUE"
+  echo "DEBUG: Option $OPTION value is $VALUE" >&2
+  echo "$VALUE"
 }
 
 # Get an option for the document and check that it is a number
@@ -60,16 +79,101 @@ getOptionNumber () {
   VALUE=${VALUE#Custom.}
   case "$VALUE" in
     [0-9]*) ;;
-    *) printf "ERROR: Option $OPTION must be a number, got '%s'\n" "$VALUE" >&2
+    *) echo "ERROR: Option $OPTION must be a number, got $VALUE" >&2
        exit 1
        ;;
   esac
-  printf "%s" "$VALUE"
+  echo "$VALUE"
 }
 
 # Convert from points (1/72 of inch) to 1/100th of mm
 points2mm() {
   printf %.1f $(bc -l <<< "1/72 * 25.4 * $1")
+}
+
+cupsPageSizeHandle() {
+  CUSTOMPAGE=false
+  PAGEWIDTH=0
+  PAGEHEIGHT=0
+  
+  PAGESIZE=$(getOption PageSize)
+  if [ -z "$PAGESIZE" ]
+  then
+    echo "DEBUG: PageSize option not found. Defaulting to A4" >&2
+    PAGESIZE="A4"
+  fi
+  
+  shopt -s nocasematch
+  case "$PAGESIZE" in
+    A0) ;;
+    A1) ;;
+    A2) ;;
+    A3) ;;
+    A4) ;;
+    A5) ;;
+    A6) ;;
+    A7) ;;
+    A8) ;;
+    A9) ;;
+    B0) ;;
+    B1) ;;
+    B2) ;;
+    B3) ;;
+    B4) ;;
+    B5) ;;
+    B6) ;;
+    B7) ;;
+    B8) ;;
+    B9) ;;
+    B10) ;;
+    C5E) ;;
+    Comm10E) ;;
+    DLE) ;;
+    Executive) ;;
+    Folio) ;;
+    Ledger) ;;
+    Legal) ;;
+    Letter) ;;
+    Tabloid) ;;
+    Custom.*)
+      regex="^Custom.([0-9]+)x([0-9]+)"
+      if [[ "${PAGESIZE}" =~ $regex ]]; then
+        CUSTOMPAGE=true
+        PAGEWIDTH="${BASH_REMATCH[1]}"
+        PAGEHEIGHT="${BASH_REMATCH[2]}"
+        PAGEWIDTH=$(points2mm $PAGEWIDTH)
+        PAGEHEIGHT=$(points2mm $PAGEHEIGHT)
+      else
+        echo "DEBUG: Custom PageSize RegEx failed. $regex" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      CUSTOMPAGE=true
+      DIMENSIONS=( $(getPddPageSize $PAGESIZE) )
+      if [ $? -ne 0 ]
+      then
+        echo "DEBUG: Failed to retrieve PageSize config for $PAGESIZE from PDD. Defaulting to A4." >&2
+        CUSTOMPAGE=false
+        PAGESIZE="A4"
+      else
+        PAGEWIDTH=$(points2mm ${DIMENSIONS[0]})
+        PAGEHEIGHT=$(points2mm ${DIMENSIONS[1]})
+      fi
+      ;;
+  esac
+  
+  echo "${CUSTOMPAGE} ${PAGESIZE} ${PAGEWIDTH} ${PAGEHEIGHT}"
+}
+
+cupsGrayscaleHandle() {
+  COLORSUPPORT=$(getAttribute ColorDevice)
+  if [ $? -ne 0 ]; then
+    echo "DEBUG: Failed to retrieve ColorDevice attribute. Defaulting to true." >&2
+    echo "true"
+  fi
+  
+  echo "$COLORSUPPORT"
 }
 
 # Make sure we have enough options
@@ -82,83 +186,32 @@ NB=$4
 OPTIONS=$5
 INFILE=$6
 
-PAGESIZE=$(getOption PageSize)
-case "$PAGESIZE" in
-  Legal)
-    PAGEWIDTH="215.9"
-    PAGEHEIGHT="355.6"
-    ;;
-  Letter)
-    PAGEWIDTH="215.9"
-    PAGEHEIGHT="279.4"
-    ;;
-  A3)
-    PAGEWIDTH="297"
-    PAGEHEIGHT="420"
-    ;;
-  A4)
-    PAGEWIDTH="210"
-    PAGEHEIGHT="297"
-    ;;
-  A4TF)
-    PAGEWIDTH="210"
-    PAGEHEIGHT="304.8"
-    ;;
-  A5)
-    PAGEWIDTH="148.5"
-    PAGEHEIGHT="210"
-    ;;
-  110x115)
-    PAGEWIDTH="279.4"
-    PAGEHEIGHT="292.1"
-    ;;
-  110x120)
-    PAGEWIDTH="279.4"
-    PAGEHEIGHT="304.8"
-    ;;
-  110x170)
-    PAGEWIDTH="279.4"
-    PAGEHEIGHT="431.8"
-    ;;
-  115x110)
-    PAGEWIDTH="292.1"
-    PAGEHEIGHT="279.4"
-    ;;
-  120x120)
-    PAGEWIDTH="304.8"
-    PAGEHEIGHT="304.8"
-    ;;
-  Custom.*)
-    regex="^Custom.([0-9]+)x([0-9]+)"
-    if [[ "${PAGESIZE}" =~ $regex ]]; then
-      PAGEWIDTH="${BASH_REMATCH[1]}"
-      PAGEHEIGHT="${BASH_REMATCH[2]}"
-      PAGEWIDTH=$(points2mm $PAGEWIDTH)
-      PAGEHEIGHT=$(points2mm $PAGEHEIGHT)
-    else
-      echo "DEBUG: Custom PageSize RegEx failed." >&2
-      echo "DEBUG: RegEx: $regex" >&2
-    fi
-    ;;
-  *)
-    printf "ERROR: Unknown page size '%s'\n" "$PAGESIZE" >&2
-    exit 1
-    ;;
-esac
+# handle print copies
+WKOPTIONS="--copies $NB"
 
-COLORSUPPORT=$(getAttribute ColorDevice)
-
-echo "DEBUG: PATH=$0" >&2
-echo "DEBUG: NB=$NB" >&2
-echo "DEBUG: OPTIONS=$OPTIONS" >&2
-echo "DEBUG: INFILE=$INFILE" >&2
-echo "DEBUG: COLORSUPPORT=$COLORSUPPORT" >&2
+# handle page sizes options
+RESULT=( $(cupsPageSizeHandle) )
+CUSTOMPAGE=${RESULT[0]}
+PAGESIZE=${RESULT[1]}
+PAGEWIDTH=${RESULT[2]}
+PAGEHEIGHT=${RESULT[3]}
 echo "DEBUG: PAGESIZE=$PAGESIZE" >&2
-echo "DEBUG: PAGEWIDTH=${PAGEWIDTH}mm" >&2
-echo "DEBUG: PAGEHEIGHT=${PAGEHEIGHT}mm" >&2
+echo "DEBUG: CUSTOMPAGE=$CUSTOMPAGE" >&2
+if [ "${CUSTOMPAGE,,}" = "true" ]
+then
+  echo "DEBUG: PAGEWIDTH=${PAGEWIDTH}mm" >&2
+  echo "DEBUG: PAGEHEIGHT=${PAGEHEIGHT}mm" >&2
+  WKOPTIONS+=" --page-width $PAGEWIDTH --page-height $PAGEHEIGHT"
+else
+  if [ -n "$PAGESIZE" ] && [ "$PAGESIZE" != "A4" ]
+  then
+    WKOPTIONS+=" --page-size $PAGESIZE"
+  fi
+fi
 
-WKOPTIONS="--copies $NB --page-width $PAGEWIDTH --page-height $PAGEHEIGHT"
-
+# handle grayscale options
+COLORSUPPORT=$(cupsGrayscaleHandle)
+echo "DEBUG: COLORSUPPORT=$COLORSUPPORT" >&2
 if [ "${COLORSUPPORT,,}" = "false" ]
 then
   WKOPTIONS+=" -g"
@@ -177,7 +230,7 @@ wkhtmltopdfCmd() {
   FILEDATA=$(cat $INFILE)
   wkhtmltopdf $WKOPTIONS - - <<< $FILEDATA
 }
-wkhtmltopdfCmd | cat
+(wkhtmltopdfCmd) | cat
 
 echo "INFO: Ready" >&2
 exit 0
