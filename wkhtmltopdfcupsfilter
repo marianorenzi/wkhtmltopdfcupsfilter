@@ -9,7 +9,7 @@ getAttribute () {
     exit 1
   fi
   
-  regex="\*$ATTRIBUTE:[[:space:]]+(\w+)"
+  regex="\*$ATTRIBUTE:[[:space:]]+(.+)"
   if [[ "${VALUE}" =~ $regex ]]; then
     VALUE="${BASH_REMATCH[1]}"
   else
@@ -87,8 +87,29 @@ getOptionNumber () {
 }
 
 # Convert from points (1/72 of inch) to 1/100th of mm
-points2mm() {
-  printf %.1f $(bc -l <<< "1/72 * 25.4 * $1")
+any2mm() {  
+  NUM=$1
+  case "$2" in
+    mm)
+      echo $1
+      ;;
+    cm)
+      printf %.1f $(bc -l <<< "10 * $1")
+      ;;
+    m)
+      printf %.1f $(bc -l <<< "1000 * $1")
+      ;;
+    in)
+      printf %.1f $(bc -l <<< "25.4 * $1")
+      ;;
+    ft)
+      printf %.1f $(bc -l <<< "304.8 * $1")
+      ;;
+    *)
+      # 1 points = 1/72 of inch
+      printf %.1f $(bc -l <<< "1/72 * 25.4 * $1")
+      ;;
+  esac
 }
 
 cupsPageSizeHandle() {
@@ -136,13 +157,14 @@ cupsPageSizeHandle() {
     Letter) ;;
     Tabloid) ;;
     Custom.*)
-      regex="^Custom.([0-9]+)x([0-9]+)"
+      regex="^Custom.([0-9]+)x([0-9]+)(\w+)?"
       if [[ "${PAGESIZE}" =~ $regex ]]; then
         CUSTOMPAGE=true
         PAGEWIDTH="${BASH_REMATCH[1]}"
         PAGEHEIGHT="${BASH_REMATCH[2]}"
-        PAGEWIDTH=$(points2mm $PAGEWIDTH)
-        PAGEHEIGHT=$(points2mm $PAGEHEIGHT)
+        PAGEUNIT="${BASH_REMATCH[3]}"
+        PAGEWIDTH=$(any2mm $PAGEWIDTH $PAGEUNIT)
+        PAGEHEIGHT=$(any2mm $PAGEHEIGHT $PAGEUNIT)
       else
         echo "DEBUG: Custom PageSize RegEx failed. $regex" >&2
         exit 1
